@@ -8,7 +8,7 @@ function getUint32(view: DataView, offset: number) {
 
 function decodeXmlText(xml: string) {
   return xml
-    .replace(/<w:tab\/>/g, " ")
+    .replace(/<w:tab\/\>/g, " ")
     .replace(/<\/w:p>/g, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&amp;/g, "&")
@@ -23,7 +23,10 @@ async function inflateRaw(bytes: Uint8Array) {
     throw new Error("This browser cannot extract DOCX files. Paste the resume text instead.");
   }
 
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  // The Blob constructor requires BlobPart types such as ArrayBuffer or ArrayBufferView backed by an ArrayBuffer.
+  // Ensure we pass an ArrayBuffer that represents only the bytes of the Uint8Array (respecting byteOffset/byteLength).
+  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const stream = new Blob([arrayBuffer]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
   const buffer = await new Response(stream).arrayBuffer();
   return new Uint8Array(buffer);
 }
