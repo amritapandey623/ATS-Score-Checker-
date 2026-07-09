@@ -8,7 +8,7 @@ function getUint32(view: DataView, offset: number) {
 
 function decodeXmlText(xml: string) {
   return xml
-    .replace(/<w:tab\/\>/g, " ")
+    .replace(/<w:tab\/>/g, " ")
     .replace(/<\/w:p>/g, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&amp;/g, "&")
@@ -20,14 +20,20 @@ function decodeXmlText(xml: string) {
 
 async function inflateRaw(bytes: Uint8Array) {
   if (!("DecompressionStream" in globalThis)) {
-    throw new Error("This browser cannot extract DOCX files. Paste the resume text instead.");
+    throw new Error(
+      "This browser cannot extract DOCX files. Paste the resume text instead."
+    );
   }
 
-  // The Blob constructor requires BlobPart types such as ArrayBuffer or ArrayBufferView backed by an ArrayBuffer.
-  // Ensure we pass an ArrayBuffer that represents only the bytes of the Uint8Array (respecting byteOffset/byteLength).
-  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  const stream = new Blob([arrayBuffer]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  // Create a copy so Blob receives a valid Uint8Array.
+  const copy = Uint8Array.from(bytes);
+
+  const stream = new Blob([copy])
+    .stream()
+    .pipeThrough(new DecompressionStream("deflate-raw"));
+
   const buffer = await new Response(stream).arrayBuffer();
+
   return new Uint8Array(buffer);
 }
 
@@ -35,9 +41,10 @@ async function extractDocxText(file: File) {
   const buffer = await file.arrayBuffer();
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
+
   let endDirectoryOffset = -1;
 
-  for (let offset = bytes.length - 22; offset >= 0; offset -= 1) {
+  for (let offset = bytes.length - 22; offset >= 0; offset--) {
     if (getUint32(view, offset) === 0x06054b50) {
       endDirectoryOffset = offset;
       break;
@@ -45,33 +52,51 @@ async function extractDocxText(file: File) {
   }
 
   if (endDirectoryOffset === -1) {
-    throw new Error("Could not read this DOCX file. Paste the resume text instead.");
+    throw new Error(
+      "Could not read this DOCX file. Paste the resume text instead."
+    );
   }
 
   const centralDirectoryOffset = getUint32(view, endDirectoryOffset + 16);
   const totalEntries = getUint16(view, endDirectoryOffset + 10);
+
   const decoder = new TextDecoder();
   let cursor = centralDirectoryOffset;
 
-  for (let index = 0; index < totalEntries; index += 1) {
+  for (let index = 0; index < totalEntries; index++) {
     if (getUint32(view, cursor) !== 0x02014b50) {
       break;
     }
 
     const compressionMethod = getUint16(view, cursor + 10);
     const compressedSize = getUint32(view, cursor + 20);
+
     const nameLength = getUint16(view, cursor + 28);
     const extraLength = getUint16(view, cursor + 30);
     const commentLength = getUint16(view, cursor + 32);
+
     const localHeaderOffset = getUint32(view, cursor + 42);
-    const fileName = decoder.decode(bytes.slice(cursor + 46, cursor + 46 + nameLength));
+
+    const fileName = decoder.decode(
+      bytes.slice(cursor + 46, cursor + 46 + nameLength)
+    );
 
     if (fileName === "word/document.xml") {
       const localNameLength = getUint16(view, localHeaderOffset + 26);
       const localExtraLength = getUint16(view, localHeaderOffset + 28);
-      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
-      const compressedBytes = bytes.slice(dataStart, dataStart + compressedSize);
-      const documentBytes = compressionMethod === 0 ? compressedBytes : await inflateRaw(compressedBytes);
+
+      const dataStart =
+        localHeaderOffset + 30 + localNameLength + localExtraLength;
+
+      const compressedBytes = bytes.slice(
+        dataStart,
+        dataStart + compressedSize
+      );
+
+      const documentBytes =
+        compressionMethod === 0
+          ? compressedBytes
+          : await inflateRaw(compressedBytes);
 
       return decodeXmlText(decoder.decode(documentBytes));
     }
@@ -79,15 +104,21 @@ async function extractDocxText(file: File) {
     cursor += 46 + nameLength + extraLength + commentLength;
   }
 
-  throw new Error("Could not find resume text in this DOCX file. Paste the resume text instead.");
+  throw new Error(
+    "Could not find resume text in this DOCX file. Paste the resume text instead."
+  );
 }
 
 async function extractPdfText(file: File) {
   const text = await file.text();
+
   const decoded = text
     .replace(/\\\(/g, "__LEFT_PAREN__")
     .replace(/\\\)/g, "__RIGHT_PAREN__");
-  const textChunks = Array.from(decoded.matchAll(/\(([^()]{2,})\)/g))
+
+  const textChunks = Array.from(
+    decoded.matchAll(/\(([^()]{2,})\)/g)
+  )
     .map((match) => match[1])
     .join(" ")
     .replace(/__LEFT_PAREN__/g, "(")
@@ -97,7 +128,9 @@ async function extractPdfText(file: File) {
     .trim();
 
   if (textChunks.length < 40) {
-    throw new Error("This PDF text could not be extracted reliably. Paste the resume text for the best ATS score.");
+    throw new Error(
+      "This PDF text could not be extracted reliably. Paste the resume text for the best ATS score."
+    );
   }
 
   return textChunks;
@@ -106,13 +139,14 @@ async function extractPdfText(file: File) {
 export async function extractResumeText(file: File) {
   const extension = file.name.split(".").pop()?.toLowerCase();
 
-  if (extension === "docx") {
-    return extractDocxText(file);
-  }
+  switch (extension) {
+    case "docx":
+      return extractDocxText(file);
 
-  if (extension === "pdf") {
-    return extractPdfText(file);
-  }
+    case "pdf":
+      return extractPdfText(file);
 
-  return file.text();
+    default:
+      return file.text();
+  }
 }
